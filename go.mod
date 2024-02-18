@@ -3,7 +3,7 @@ module github.com/disgoorg/oteldisgo
 go 1.21
 
 require (
-	github.com/disgoorg/disgo v0.17.3-0.20240214073818-2f57a4edaadf
+	github.com/disgoorg/disgo v0.17.3-0.20240218155804-ecbc6f4a0ccd
 	go.opentelemetry.io/otel v1.23.1
 	go.opentelemetry.io/otel/metric v1.23.1
 	go.opentelemetry.io/otel/trace v1.23.1

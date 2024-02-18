@@ -1,12 +1,10 @@
 package oteldisgo
 
 import (
-	"context"
 	"fmt"
 
 	"github.com/disgoorg/disgo"
 	"github.com/disgoorg/disgo/discord"
-	"github.com/disgoorg/disgo/events"
 	"github.com/disgoorg/disgo/handler"
 	"go.opentelemetry.io/otel/attribute"
 	otelmetric "go.opentelemetry.io/otel/metric"
@@ -44,7 +42,7 @@ type otelHandler struct {
 	meter      otelmetric.Meter
 }
 
-func (h *otelHandler) Handle(ctx context.Context, e *events.InteractionCreate) error {
+func (h *otelHandler) Handle(e *handler.InteractionEvent) error {
 	var (
 		spanName string
 		attr     []attribute.KeyValue
@@ -123,10 +121,12 @@ func (h *otelHandler) Handle(ctx context.Context, e *events.InteractionCreate) e
 		attr = append(attr, attribute.String("interaction.guild.id", e.Interaction.GuildID().String()))
 	}
 
-	ctx, span := h.tracer.Start(ctx, spanName,
+	var span oteltrace.Span
+	e.Ctx, span = h.tracer.Start(e.Ctx, spanName,
 		oteltrace.WithSpanKind(oteltrace.SpanKindServer),
 		oteltrace.WithAttributes(attr...),
 	)
+
 	defer span.End()
-	return h.handler(ctx, e)
+	return h.handler(e)
 }

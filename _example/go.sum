@@ -2,8 +2,8 @@ github.com/cenkalti/backoff/v4 v4.2.1 h1:y4OZtCnogmCPw98Zjyt5a6+QwPLGkiQsYW5oUqy
 github.com/cenkalti/backoff/v4 v4.2.1/go.mod h1:Y3VNntkOUPxTVeUxJ/G5vcM//AlwfmyYozVcomhLiZE=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/disgoorg/disgo v0.17.3-0.20240214073818-2f57a4edaadf h1:Ioci9LgN+58PlkcjIxsOZ3zaz8+JWylrMLSg1aViy+Q=
-github.com/disgoorg/disgo v0.17.3-0.20240214073818-2f57a4edaadf/go.mod h1:snXmNf+rYY3EfFyCk9ZjiWC7QW+gOB0fTGTjm2qvgRM=
+github.com/disgoorg/disgo v0.17.3-0.20240218155804-ecbc6f4a0ccd h1:1PSveHjuWMpW+hoOTriWVpiv96ElyiBeTNA9opr2T3g=
+github.com/disgoorg/disgo v0.17.3-0.20240218155804-ecbc6f4a0ccd/go.mod h1:gkl6DBdbKUvmOOJayWPSvS52KPN/8uJGJ2f13gCEB1o=
 github.com/disgoorg/json v1.1.0 h1:7xigHvomlVA9PQw9bMGO02PHGJJPqvX5AnwlYg/Tnys=
 github.com/disgoorg/json v1.1.0/go.mod h1:BHDwdde0rpQFDVsRLKhma6Y7fTbQKub/zdGO5O9NqqA=
 github.com/disgoorg/log v1.2.1 h1:kZYAWkUBcGy4LbZcgYtgYu49xNVLy+xG5Uq3yz5VVQs=

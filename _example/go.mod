@@ -5,7 +5,7 @@ go 1.21
 replace github.com/disgoorg/oteldisgo => ../
 
 require (
-	github.com/disgoorg/disgo v0.17.3-0.20240214073818-2f57a4edaadf
+	github.com/disgoorg/disgo v0.17.3-0.20240218155804-ecbc6f4a0ccd
 	github.com/disgoorg/log v1.2.1
 	github.com/disgoorg/oteldisgo v0.0.0-20240218151119-1f5606ffb031
 	github.com/disgoorg/snowflake/v2 v2.0.1
