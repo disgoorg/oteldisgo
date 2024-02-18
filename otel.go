@@ -63,10 +63,10 @@ func (h *otelHandler) Handle(ctx context.Context, e *events.InteractionCreate) e
 			attr = append(attr, attribute.String("interaction.command.path", d.CommandPath()))
 		case discord.UserCommandInteractionData:
 			spanName = fmt.Sprintf("UserCommand: /%s", d.CommandName())
-			attr = append(attr, attribute.String("interaction.command.name", d.CommandName()))
+			attr = append(attr, attribute.String("interaction.command.user.id", d.TargetID().String()))
 		case discord.MessageCommandInteractionData:
 			spanName = fmt.Sprintf("MessageCommand: /%s", d.CommandName())
-			attr = append(attr, attribute.String("interaction.command.name", d.CommandName()))
+			attr = append(attr, attribute.String("interaction.command.message.id", d.TargetID().String()))
 		}
 		attr = append(attr,
 			attribute.String("interaction.command.name", i.Data.CommandName()),
@@ -77,6 +77,12 @@ func (h *otelHandler) Handle(ctx context.Context, e *events.InteractionCreate) e
 		}
 	case discord.AutocompleteInteraction:
 		spanName = fmt.Sprintf("Autocomplete: %s", i.Data.CommandPath())
+		if i.Data.SubCommandName != nil {
+			attr = append(attr, attribute.String("interaction.command.subcommand", *i.Data.SubCommandName))
+		}
+		if i.Data.SubCommandGroupName != nil {
+			attr = append(attr, attribute.String("interaction.command.subcommandgroup", *i.Data.SubCommandGroupName))
+		}
 		attr = append(attr,
 			attribute.String("interaction.command.path", i.Data.CommandPath()),
 			attribute.String("interaction.command.name", i.Data.CommandName),
