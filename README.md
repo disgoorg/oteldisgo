@@ -50,7 +50,7 @@ func main() {
 OtelDisGo provides the following spans attributes:
 
 1. For All:
-   - `interaction.tye` - The type of the interaction
+   - `interaction.type` - The type of the interaction
    - `interaction.id` - The id of the interaction
    - `interaction.application.id` - The id of the application
    - `interaction.user.id` - The id of the user
