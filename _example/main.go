@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -13,12 +14,12 @@ import (
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/handler"
 	"github.com/disgoorg/disgo/rest"
-	"github.com/disgoorg/log"
-	"github.com/disgoorg/oteldisgo"
 	"github.com/disgoorg/snowflake/v2"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/disgoorg/oteldisgo"
 )
 
 const (
@@ -42,12 +43,12 @@ var (
 )
 
 func main() {
-	log.SetLevel(log.LevelDebug)
-	log.SetFlags(log.LstdFlags | log.Lshortfile)
+	slog.SetLogLoggerLevel(slog.LevelDebug)
 
 	tracer, err := newTracer()
 	if err != nil {
-		log.Fatal("error while getting tracer")
+		slog.Error("error while getting tracer", slog.Any("err", err))
+		return
 	}
 
 	r := handler.New()
@@ -65,22 +66,24 @@ func main() {
 		bot.WithEventListeners(r),
 	)
 	if err != nil {
-		log.Fatal("error while building disgo: ", err)
+		slog.Error("error while building disgo", slog.Any("err", err))
+		return
 	}
 
 	if err = handler.SyncCommands(client, commands, []snowflake.ID{guildID}); err != nil {
-		log.Fatal("error while syncing commands: ", err)
+		slog.Error("error while syncing commands", slog.Any("err", err))
 	}
 
 	defer client.Close(context.TODO())
 
 	if err = client.OpenGateway(context.TODO()); err != nil {
-		log.Fatal("errors while connecting to gateway: ", err)
+		slog.Error("error while opening gateway", slog.Any("err", err))
+		return
 	}
 
-	log.Info("example is now running. Press CTRL-C to exit.")
+	slog.Info("example is now running. Press CTRL-C to exit.")
 	s := make(chan os.Signal, 1)
-	signal.Notify(s, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
+	signal.Notify(s, syscall.SIGINT, syscall.SIGTERM)
 	<-s
 }
 

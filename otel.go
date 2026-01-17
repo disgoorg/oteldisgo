@@ -100,7 +100,6 @@ func (h *otelHandler) Handle(e *handler.InteractionEvent) error {
 			attribute.Int("interaction.component.type", int(i.Data.Type())),
 			attribute.String("interaction.component.customid", i.Data.CustomID()),
 		)
-
 	case discord.ModalSubmitInteraction:
 		spanName = fmt.Sprintf("ModalSubmit: %s", i.Data.CustomID)
 		attr = append(attr,
