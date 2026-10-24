@@ -80,7 +80,7 @@ OtelDisGo provides the following spans attributes:
     - `interaction.component.type` - The type of the component
     - `interaction.component.customid` - The custom id of the component
 5. Modal Interaction
-    - `interaction.component.customid` - The custom id of the modal
+    - `interaction.modal.customid` - The custom id of the modal
 
 ## Documentation
 
