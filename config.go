@@ -38,17 +38,19 @@ func (c *config) apply(opts []ConfigOpt) {
 
 func WithTracerProvider(provider oteltrace.TracerProvider) ConfigOpt {
 	return func(cfg *config) {
-		if provider != nil {
-			cfg.TracerProvider = provider
+		if provider == nil {
+			provider = otel.GetTracerProvider()
 		}
+		cfg.TracerProvider = provider
 	}
 }
 
 func WithMeterProvider(provider otelmetric.MeterProvider) ConfigOpt {
 	return func(cfg *config) {
-		if provider != nil {
-			cfg.MeterProvider = provider
+		if provider == nil {
+			provider = otel.GetMeterProvider()
 		}
+		cfg.MeterProvider = provider
 	}
 }
 
@@ -60,8 +62,9 @@ func WithFilter(filter FilterFunc) ConfigOpt {
 
 func WithSpanNameFormatter(formatter SpanNameFormatter) ConfigOpt {
 	return func(cfg *config) {
-		if formatter != nil {
-			cfg.SpanNameFormatter = formatter
+		if formatter == nil {
+			formatter = defaultSpanNameFormatter
 		}
+		cfg.SpanNameFormatter = formatter
 	}
 }
