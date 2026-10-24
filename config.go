@@ -12,32 +12,32 @@ type (
 	SpanNameFormatter func(e *handler.InteractionEvent) string
 )
 
-func DefaultConfig() *Config {
-	return &Config{
+func defaultConfig() config {
+	return config{
 		TracerProvider:    otel.GetTracerProvider(),
 		MeterProvider:     otel.GetMeterProvider(),
 		Filter:            nil,
-		SpanNameFormatter: nil,
+		SpanNameFormatter: defaultSpanNameFormatter,
 	}
 }
 
-type Config struct {
+type config struct {
 	TracerProvider    oteltrace.TracerProvider
 	MeterProvider     otelmetric.MeterProvider
 	Filter            FilterFunc
 	SpanNameFormatter SpanNameFormatter
 }
 
-type ConfigOpt func(config *Config)
+type ConfigOpt func(config *config)
 
-func (c *Config) Apply(opts []ConfigOpt) {
+func (c *config) apply(opts []ConfigOpt) {
 	for _, opt := range opts {
 		opt(c)
 	}
 }
 
 func WithTracerProvider(provider oteltrace.TracerProvider) ConfigOpt {
-	return func(cfg *Config) {
+	return func(cfg *config) {
 		if provider != nil {
 			cfg.TracerProvider = provider
 		}
@@ -45,7 +45,7 @@ func WithTracerProvider(provider oteltrace.TracerProvider) ConfigOpt {
 }
 
 func WithMeterProvider(provider otelmetric.MeterProvider) ConfigOpt {
-	return func(cfg *Config) {
+	return func(cfg *config) {
 		if provider != nil {
 			cfg.MeterProvider = provider
 		}
@@ -53,13 +53,15 @@ func WithMeterProvider(provider otelmetric.MeterProvider) ConfigOpt {
 }
 
 func WithFilter(filter FilterFunc) ConfigOpt {
-	return func(cfg *Config) {
+	return func(cfg *config) {
 		cfg.Filter = filter
 	}
 }
 
 func WithSpanNameFormatter(formatter SpanNameFormatter) ConfigOpt {
-	return func(cfg *Config) {
-		cfg.SpanNameFormatter = formatter
+	return func(cfg *config) {
+		if formatter != nil {
+			cfg.SpanNameFormatter = formatter
+		}
 	}
 }

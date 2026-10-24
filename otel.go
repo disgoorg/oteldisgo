@@ -15,8 +15,8 @@ import (
 )
 
 func Middleware(serverName string, opts ...ConfigOpt) handler.Middleware {
-	cfg := DefaultConfig()
-	cfg.Apply(opts)
+	cfg := defaultConfig()
+	cfg.apply(opts)
 
 	tracer := cfg.TracerProvider.Tracer(
 		disgo.Module,
@@ -54,40 +54,22 @@ func (h *otelHandler) Handle(e *handler.InteractionEvent) error {
 		return h.handler(e)
 	}
 
-	var (
-		spanPrefix string
-		rawPath    string
-		spanName   string
-		attr       []attribute.KeyValue
-	)
+	var attr []attribute.KeyValue
 	switch i := e.Interaction.(type) {
 	case discord.ApplicationCommandInteraction:
 		switch d := i.Data.(type) {
 		case discord.SlashCommandInteractionData:
-			spanPrefix = "SlashCommand"
-			rawPath = d.CommandPath()
-			spanName = fmt.Sprintf("%s: %s", spanPrefix, rawPath)
 			if d.SubCommandName != nil {
 				attr = append(attr, attribute.String("interaction.command.subcommand", *d.SubCommandName))
 			}
 			if d.SubCommandGroupName != nil {
 				attr = append(attr, attribute.String("interaction.command.subcommandgroup", *d.SubCommandGroupName))
 			}
-			attr = append(attr, attribute.String("interaction.command.path", rawPath))
+			attr = append(attr, attribute.String("interaction.command.path", d.CommandPath()))
 		case discord.UserCommandInteractionData:
-			spanPrefix = "UserCommand"
-			rawPath = "/" + d.CommandName()
-			spanName = fmt.Sprintf("%s: %s", spanPrefix, rawPath)
 			attr = append(attr, attribute.String("interaction.command.user.id", d.TargetID().String()))
 		case discord.MessageCommandInteractionData:
-			spanPrefix = "MessageCommand"
-			rawPath = "/" + d.CommandName()
-			spanName = fmt.Sprintf("%s: %s", spanPrefix, rawPath)
 			attr = append(attr, attribute.String("interaction.command.message.id", d.TargetID().String()))
-		case discord.EntryPointCommandInteractionData:
-			spanPrefix = "EntryPointCommand"
-			rawPath = "/" + d.CommandName()
-			spanName = fmt.Sprintf("%s: %s", spanPrefix, rawPath)
 		}
 		attr = append(attr,
 			attribute.String("interaction.command.name", i.Data.CommandName()),
@@ -97,9 +79,6 @@ func (h *otelHandler) Handle(e *handler.InteractionEvent) error {
 			attr = append(attr, attribute.String("interaction.command.guild.id", i.Data.GuildID().String()))
 		}
 	case discord.AutocompleteInteraction:
-		spanPrefix = "Autocomplete"
-		rawPath = i.Data.CommandPath()
-		spanName = fmt.Sprintf("%s: %s", spanPrefix, rawPath)
 		if i.Data.SubCommandName != nil {
 			attr = append(attr, attribute.String("interaction.command.subcommand", *i.Data.SubCommandName))
 		}
@@ -107,7 +86,7 @@ func (h *otelHandler) Handle(e *handler.InteractionEvent) error {
 			attr = append(attr, attribute.String("interaction.command.subcommandgroup", *i.Data.SubCommandGroupName))
 		}
 		attr = append(attr,
-			attribute.String("interaction.command.path", rawPath),
+			attribute.String("interaction.command.path", i.Data.CommandPath()),
 			attribute.String("interaction.command.name", i.Data.CommandName),
 			attribute.String("interaction.command.id", i.Data.CommandID.String()),
 		)
@@ -115,49 +94,31 @@ func (h *otelHandler) Handle(e *handler.InteractionEvent) error {
 			attr = append(attr, attribute.String("interaction.command.guild.id", i.Data.GuildID.String()))
 		}
 	case discord.ComponentInteraction:
-		rawPath = i.Data.CustomID()
-		switch i.Data.(type) {
-		case discord.ButtonInteractionData:
-			spanPrefix = "Button"
-			spanName = fmt.Sprintf("%s: %s", spanPrefix, rawPath)
-		case discord.SelectMenuInteractionData:
-			spanPrefix = "SelectMenu"
-			spanName = fmt.Sprintf("%s: %s", spanPrefix, rawPath)
-		}
 		attr = append(attr,
 			attribute.Int("interaction.component.type", int(i.Data.Type())),
-			attribute.String("interaction.component.customid", rawPath),
+			attribute.String("interaction.component.customid", i.Data.CustomID()),
 		)
 	case discord.ModalSubmitInteraction:
-		spanPrefix = "ModalSubmit"
-		rawPath = i.Data.CustomID
-		spanName = fmt.Sprintf("%s: %s", spanPrefix, rawPath)
 		attr = append(attr,
-			attribute.String("interaction.modal.customid", rawPath),
+			attribute.String("interaction.modal.customid", i.Data.CustomID),
 		)
-	default:
-		spanName = "Unknown"
 	}
 	attr = append(attr,
-		attribute.Int("interaction.type", int(e.Interaction.Type())),
-		attribute.String("interaction.id", e.Interaction.ID().String()),
-		attribute.String("interaction.application.id", e.Interaction.ApplicationID().String()),
-		attribute.String("interaction.user.id", e.Interaction.User().ID.String()),
-		attribute.String("interaction.createdat", e.Interaction.CreatedAt().String()),
+		attribute.Int("interaction.type", int(e.Type())),
+		attribute.String("interaction.id", e.ID().String()),
+		attribute.String("interaction.application.id", e.ApplicationID().String()),
+		attribute.String("interaction.user.id", e.User().ID.String()),
+		attribute.String("interaction.createdat", e.CreatedAt().String()),
 	)
-	if e.Interaction.Channel().MessageChannel != nil {
-		attr = append(attr, attribute.String("interaction.channel.id", e.Interaction.Channel().ID().String()))
+	if e.Channel().MessageChannel != nil {
+		attr = append(attr, attribute.String("interaction.channel.id", e.Channel().ID().String()))
 	}
-	if e.Interaction.GuildID() != nil {
-		attr = append(attr, attribute.String("interaction.guild.id", e.Interaction.GuildID().String()))
-	}
-
-	if h.spanNameFormatter != nil {
-		spanName = h.spanNameFormatter(e)
+	if e.GuildID() != nil {
+		attr = append(attr, attribute.String("interaction.guild.id", e.GuildID().String()))
 	}
 
 	var span oteltrace.Span
-	e.Ctx, span = h.tracer.Start(e.Ctx, spanName,
+	e.Ctx, span = h.tracer.Start(e.Ctx, h.spanNameFormatter(e),
 		oteltrace.WithSpanKind(oteltrace.SpanKindServer),
 		oteltrace.WithAttributes(attr...),
 	)
@@ -166,16 +127,55 @@ func (h *otelHandler) Handle(e *handler.InteractionEvent) error {
 	err := h.handler(e)
 	// Route variables (e.Vars) are populated by disgo's router during h.handler(e),
 	// so update the span name afterwards to replace dynamic segments with {var} placeholders.
-	if h.spanNameFormatter != nil {
+	if len(e.Vars) > 0 {
 		span.SetName(h.spanNameFormatter(e))
-	} else if len(e.Vars) > 0 && rawPath != "" {
-		span.SetName(fmt.Sprintf("%s: %s", spanPrefix, normalizePath(rawPath, e.Vars)))
 	}
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
 	return err
+}
+
+func defaultSpanNameFormatter(e *handler.InteractionEvent) string {
+	var (
+		spanPrefix string
+		rawPath    string
+	)
+	switch i := e.Interaction.(type) {
+	case discord.ApplicationCommandInteraction:
+		switch d := i.Data.(type) {
+		case discord.SlashCommandInteractionData:
+			spanPrefix = "SlashCommand"
+			rawPath = d.CommandPath()
+		case discord.UserCommandInteractionData:
+			spanPrefix = "UserCommand"
+			rawPath = "/" + d.CommandName()
+		case discord.MessageCommandInteractionData:
+			spanPrefix = "MessageCommand"
+			rawPath = "/" + d.CommandName()
+		case discord.EntryPointCommandInteractionData:
+			spanPrefix = "EntryPointCommand"
+			rawPath = "/" + d.CommandName()
+		}
+	case discord.AutocompleteInteraction:
+		spanPrefix = "Autocomplete"
+		rawPath = i.Data.CommandPath()
+	case discord.ComponentInteraction:
+		rawPath = i.Data.CustomID()
+		switch i.Data.(type) {
+		case discord.ButtonInteractionData:
+			spanPrefix = "Button"
+		case discord.SelectMenuInteractionData:
+			spanPrefix = "SelectMenu"
+		}
+	case discord.ModalSubmitInteraction:
+		spanPrefix = "ModalSubmit"
+		rawPath = i.Data.CustomID
+	default:
+		return "Unknown"
+	}
+	return fmt.Sprintf("%s: %s", spanPrefix, normalizePath(rawPath, e.Vars))
 }
 
 func normalizePath(path string, vars map[string]string) string {
