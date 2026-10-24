@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/disgoorg/disgo"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/handler"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	otelmetric "go.opentelemetry.io/otel/metric"
@@ -27,26 +29,60 @@ func Middleware(serverName string, opts ...ConfigOpt) handler.Middleware {
 		otelmetric.WithInstrumentationVersion(disgo.SemVersion),
 	)
 
+	durationHistogram, err := meter.Float64Histogram(
+		"discord.interaction.duration",
+		otelmetric.WithDescription("Duration of Discord interaction handling."),
+		otelmetric.WithUnit("s"),
+		otelmetric.WithExplicitBucketBoundaries(0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1, 2.5, 5, 7.5, 10),
+	)
+	if err != nil {
+		otel.Handle(err)
+	}
+
+	interactionCounter, err := meter.Int64Counter(
+		"discord.interaction.count",
+		otelmetric.WithDescription("Total number of Discord interactions handled."),
+		otelmetric.WithUnit("{interaction}"),
+	)
+	if err != nil {
+		otel.Handle(err)
+	}
+
+	activeInteractions, err := meter.Int64UpDownCounter(
+		"discord.interaction.active",
+		otelmetric.WithDescription("Number of currently active Discord interactions being handled."),
+		otelmetric.WithUnit("{interaction}"),
+	)
+	if err != nil {
+		otel.Handle(err)
+	}
+
 	return func(handler handler.Handler) handler.Handler {
 		h := &otelHandler{
-			serverName:        serverName,
-			handler:           handler,
-			tracer:            tracer,
-			meter:             meter,
-			filter:            cfg.Filter,
-			spanNameFormatter: cfg.SpanNameFormatter,
+			serverName:         serverName,
+			handler:            handler,
+			tracer:             tracer,
+			meter:              meter,
+			filter:             cfg.Filter,
+			spanNameFormatter:  cfg.SpanNameFormatter,
+			durationHistogram:  durationHistogram,
+			interactionCounter: interactionCounter,
+			activeInteractions: activeInteractions,
 		}
 		return h.Handle
 	}
 }
 
 type otelHandler struct {
-	serverName        string
-	handler           handler.Handler
-	tracer            oteltrace.Tracer
-	meter             otelmetric.Meter
-	filter            FilterFunc
-	spanNameFormatter SpanNameFormatter
+	serverName         string
+	handler            handler.Handler
+	tracer             oteltrace.Tracer
+	meter              otelmetric.Meter
+	filter             FilterFunc
+	spanNameFormatter  SpanNameFormatter
+	durationHistogram  otelmetric.Float64Histogram
+	interactionCounter otelmetric.Int64Counter
+	activeInteractions otelmetric.Int64UpDownCounter
 }
 
 func (h *otelHandler) Handle(e *handler.InteractionEvent) error {
@@ -103,8 +139,9 @@ func (h *otelHandler) Handle(e *handler.InteractionEvent) error {
 			attribute.String("interaction.modal.customid", i.Data.CustomID),
 		)
 	}
+	interactionType := int(e.Type())
 	attr = append(attr,
-		attribute.Int("interaction.type", int(e.Type())),
+		attribute.Int("interaction.type", interactionType),
 		attribute.String("interaction.id", e.ID().String()),
 		attribute.String("interaction.application.id", e.ApplicationID().String()),
 		attribute.String("interaction.user.id", e.User().ID.String()),
@@ -117,23 +154,46 @@ func (h *otelHandler) Handle(e *handler.InteractionEvent) error {
 		attr = append(attr, attribute.String("interaction.guild.id", e.GuildID().String()))
 	}
 
+	spanName := h.spanNameFormatter(e)
 	var span oteltrace.Span
-	e.Ctx, span = h.tracer.Start(e.Ctx, h.spanNameFormatter(e),
+	e.Ctx, span = h.tracer.Start(e.Ctx, spanName,
 		oteltrace.WithSpanKind(oteltrace.SpanKindServer),
 		oteltrace.WithAttributes(attr...),
 	)
 	defer span.End()
 
+	activeAttrs := otelmetric.WithAttributes(
+		attribute.Int("interaction.type", interactionType),
+	)
+	h.activeInteractions.Add(e.Ctx, 1, activeAttrs)
+	defer h.activeInteractions.Add(e.Ctx, -1, activeAttrs)
+
+	start := time.Now()
 	err := h.handler(e)
+	duration := time.Since(start).Seconds()
+
 	// Route variables (e.Vars) are populated by disgo's router during h.handler(e),
 	// so update the span name afterwards to replace dynamic segments with {var} placeholders.
 	if len(e.Vars) > 0 {
-		span.SetName(h.spanNameFormatter(e))
+		spanName = h.spanNameFormatter(e)
+		span.SetName(spanName)
 	}
+
+	status := "ok"
 	if err != nil {
+		status = "error"
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 	}
+
+	metricAttrs := otelmetric.WithAttributes(
+		attribute.Int("interaction.type", interactionType),
+		attribute.String("interaction.name", spanName),
+		attribute.String("interaction.status", status),
+	)
+	h.durationHistogram.Record(e.Ctx, duration, metricAttrs)
+	h.interactionCounter.Add(e.Ctx, 1, metricAttrs)
+
 	return err
 }
 
