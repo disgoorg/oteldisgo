@@ -82,6 +82,19 @@ OtelDisGo provides the following spans attributes:
 5. Modal Interaction
     - `interaction.modal.customid` - The custom id of the modal
 
+### OTEL Metrics
+
+OtelDisGo records the following metrics:
+
+1. Instruments:
+   - `discord.interaction.duration` (`Float64Histogram`, unit `s`) - Duration of Discord interaction handling
+   - `discord.interaction.count` (`Int64Counter`, unit `{interaction}`) - Total number of Discord interactions handled
+   - `discord.interaction.active` (`Int64UpDownCounter`, unit `{interaction}`) - Number of currently active Discord interactions being handled
+2. Metric Attributes:
+   - `interaction.type` - The type of the interaction (on all metrics)
+   - `interaction.name` - The formatted span name, using `WithSpanNameFormatter` if configured (on `duration` and `count`)
+   - `interaction.status` - `"ok"` or `"error"` (on `duration` and `count`)
+
 ## Documentation
 
 Documentation can be found under
