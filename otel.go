@@ -2,11 +2,11 @@ package oteldisgo
 
 import (
 	"fmt"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/disgoorg/disgo"
 	"github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/handler"
 	"go.opentelemetry.io/otel"
@@ -16,17 +16,33 @@ import (
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
-func Middleware(serverName string, opts ...ConfigOpt) handler.Middleware {
+const Module = "github.com/disgoorg/oteldisgo"
+
+var Version = getVersion()
+
+func getVersion() string {
+	bi, ok := debug.ReadBuildInfo()
+	if ok {
+		for _, dep := range bi.Deps {
+			if dep.Path == Module {
+				return dep.Version
+			}
+		}
+	}
+	return "unknown"
+}
+
+func Middleware(opts ...ConfigOpt) handler.Middleware {
 	cfg := defaultConfig()
 	cfg.apply(opts)
 
 	tracer := cfg.TracerProvider.Tracer(
-		disgo.Module,
-		oteltrace.WithInstrumentationVersion(disgo.SemVersion),
+		Module,
+		oteltrace.WithInstrumentationVersion(Version),
 	)
 	meter := cfg.MeterProvider.Meter(
-		disgo.Module,
-		otelmetric.WithInstrumentationVersion(disgo.SemVersion),
+		Module,
+		otelmetric.WithInstrumentationVersion(Version),
 	)
 
 	durationHistogram, err := meter.Float64Histogram(
@@ -59,7 +75,6 @@ func Middleware(serverName string, opts ...ConfigOpt) handler.Middleware {
 
 	return func(handler handler.Handler) handler.Handler {
 		h := &otelHandler{
-			serverName:         serverName,
 			handler:            handler,
 			tracer:             tracer,
 			meter:              meter,
@@ -74,7 +89,6 @@ func Middleware(serverName string, opts ...ConfigOpt) handler.Middleware {
 }
 
 type otelHandler struct {
-	serverName         string
 	handler            handler.Handler
 	tracer             oteltrace.Tracer
 	meter              otelmetric.Meter
