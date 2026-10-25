@@ -5,15 +5,38 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.20.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
-func newTracer() (trace.Tracer, error) {
+func setupOTel() (trace.Tracer, error) {
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceName(Name),
+		semconv.ServiceNamespace(Namespace),
+		semconv.ServiceInstanceID(InstanceID),
+		semconv.ServiceVersion(Version),
+	)
+
+	tracer, err := newTracer(res)
+	if err != nil {
+		return nil, err
+	}
+
+	if err = setupMeter(res); err != nil {
+		return nil, err
+	}
+
+	return tracer, nil
+}
+
+func newTracer(res *resource.Resource) (trace.Tracer, error) {
 	opts := []otlptracehttp.Option{
 		otlptracehttp.WithEndpoint(otelEndpoint),
 	}
@@ -30,16 +53,34 @@ func newTracer() (trace.Tracer, error) {
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exp),
-		sdktrace.WithResource(resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName(Name),
-			semconv.ServiceNamespace(Namespace),
-			semconv.ServiceInstanceID(InstanceID),
-			semconv.ServiceVersion(Version),
-		)),
+		sdktrace.WithResource(res),
 	)
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 
 	return otel.Tracer(Name), nil
+}
+
+func setupMeter(res *resource.Resource) error {
+	opts := []otlpmetrichttp.Option{
+		otlpmetrichttp.WithEndpoint(otelEndpoint),
+	}
+	if otelSecure == "false" {
+		opts = append(opts, otlpmetrichttp.WithInsecure())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	exp, err := otlpmetrichttp.New(ctx, opts...)
+	if err != nil {
+		return err
+	}
+
+	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp)),
+		sdkmetric.WithResource(res),
+	)
+	otel.SetMeterProvider(mp)
+
+	return nil
 }

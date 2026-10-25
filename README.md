@@ -39,7 +39,7 @@ import (
 
 func main() {
 	r := handler.New()
-	r.Use(oteldisgo.Middleware("example"))
+	r.Use(oteldisgo.Middleware())
 	// handle commands as usual here
 }
 
