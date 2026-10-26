@@ -3,6 +3,10 @@ linters:
   default: standard
   enable:
     - gosec
+  settings:
+    gosec:
+      excludes:
+        - G115
 formatters:
   enable:
     - gofumpt

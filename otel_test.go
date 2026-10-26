@@ -2,8 +2,9 @@ package oteldisgo
 
 import (
 	"context"
-	"encoding/json"
+	"embed"
 	"errors"
+	"path"
 	"testing"
 
 	"github.com/disgoorg/disgo/discord"
@@ -43,51 +44,25 @@ func setupTestMeter(t *testing.T) (*sdkmetric.ManualReader, otelmetric.MeterProv
 	return reader, mp
 }
 
-func mustUnmarshalInteraction(t *testing.T, payload map[string]any) discord.Interaction {
+//go:embed testdata/*.json
+var testData embed.FS
+
+func loadInteractionEvent(t *testing.T, file string) *handler.InteractionEvent {
 	t.Helper()
-	raw, err := json.Marshal(payload)
+	raw, err := testData.ReadFile(path.Join("testdata", file))
 	if err != nil {
-		t.Fatalf("failed to marshal interaction payload: %v", err)
+		t.Fatalf("failed to read testdata/%s: %v", file, err)
 	}
 	interaction, err := discord.UnmarshalInteraction(raw)
 	if err != nil {
-		t.Fatalf("failed to unmarshal interaction: %v", err)
+		t.Fatalf("failed to unmarshal testdata/%s: %v", file, err)
 	}
-	return interaction
-}
-
-func newInteractionEvent(t *testing.T, payload map[string]any) *handler.InteractionEvent {
-	t.Helper()
-	interaction := mustUnmarshalInteraction(t, payload)
 	return &handler.InteractionEvent{
 		InteractionCreate: &events.InteractionCreate{
 			Interaction: interaction,
 		},
 		Ctx:  context.Background(),
 		Vars: make(map[string]string),
-	}
-}
-
-func basePayload(interactionType discord.InteractionType, data map[string]any) map[string]any {
-	return map[string]any{
-		"id":             "100000000000000001",
-		"application_id": "200000000000000002",
-		"type":           interactionType,
-		"token":          "test-token",
-		"version":        1,
-		"guild_id":       "300000000000000003",
-		"channel": map[string]any{
-			"id":          "400000000000000004",
-			"type":        discord.ChannelTypeGuildText,
-			"name":        "general",
-			"permissions": "0",
-		},
-		"user": map[string]any{
-			"id":            "500000000000000005",
-			"username":      "testuser",
-			"discriminator": "0",
-		},
-		"data": data,
 	}
 }
 
@@ -99,183 +74,167 @@ func attrMap(attrs []attribute.KeyValue) map[string]attribute.Value {
 	return m
 }
 
-func TestSlashCommandSpanAndAttributes(t *testing.T) {
-	exporter, tp := setupTestTracer(t)
-
-	r := handler.New()
-	r.Use(Middleware("test-bot", WithTracerProvider(tp)))
-
-	called := false
-	r.SlashCommand("/settings/notifications/enable", func(data discord.SlashCommandInteractionData, e *handler.CommandEvent) error {
-		called = true
-		if !oteltrace.SpanFromContext(e.Ctx).SpanContext().IsValid() {
-			t.Errorf("expected valid span in CommandEvent.Ctx")
-		}
-		return nil
-	})
-
-	ie := newInteractionEvent(t, basePayload(discord.InteractionTypeApplicationCommand, map[string]any{
-		"id":       "600000000000000006",
-		"name":     "settings",
-		"type":     discord.ApplicationCommandTypeSlash,
-		"guild_id": "300000000000000003",
-		"options": []map[string]any{
-			{
-				"name": "notifications",
-				"type": discord.ApplicationCommandOptionTypeSubCommandGroup,
-				"options": []map[string]any{
-					{
-						"name": "enable",
-						"type": discord.ApplicationCommandOptionTypeSubCommand,
-					},
-				},
-			},
-		},
-	}))
-
-	if err := r.Handle("/settings/notifications/enable", ie); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !called {
-		t.Fatalf("expected slash command handler to be called")
-	}
-
-	spans := exporter.GetSpans()
-	if len(spans) != 1 {
-		t.Fatalf("expected 1 span, got %d", len(spans))
-	}
-
-	span := spans[0]
-	if span.Name != "SlashCommand: /settings/notifications/enable" {
-		t.Errorf("unexpected span name: %q", span.Name)
-	}
-	if span.SpanKind != oteltrace.SpanKindServer {
-		t.Errorf("expected SpanKindServer, got %v", span.SpanKind)
-	}
-	if span.Status.Code != codes.Unset {
-		t.Errorf("expected status Unset, got %v", span.Status.Code)
-	}
-
-	attrs := attrMap(span.Attributes)
-	expectedStrings := map[string]string{
-		"interaction.id":                      "100000000000000001",
-		"interaction.application.id":          "200000000000000002",
-		"interaction.user.id":                 "500000000000000005",
-		"interaction.channel.id":              "400000000000000004",
-		"interaction.guild.id":                "300000000000000003",
-		"interaction.command.id":              "600000000000000006",
-		"interaction.command.name":            "settings",
-		"interaction.command.guild.id":        "300000000000000003",
-		"interaction.command.subcommand":      "enable",
-		"interaction.command.subcommandgroup": "notifications",
-		"interaction.command.path":            "/settings/notifications/enable",
-	}
-	for k, want := range expectedStrings {
-		got, ok := attrs[k]
-		if !ok {
-			t.Errorf("missing expected attribute %q", k)
-			continue
-		}
-		if got.AsString() != want {
-			t.Errorf("attribute %q = %q, want %q", k, got.AsString(), want)
-		}
-	}
-	if got := attrs["interaction.type"].AsInt64(); got != int64(discord.InteractionTypeApplicationCommand) {
-		t.Errorf("interaction.type = %d, want %d", got, discord.InteractionTypeApplicationCommand)
-	}
-}
-
-func TestOtherCommandAndAutocompleteSpans(t *testing.T) {
+func TestInteractionSpans(t *testing.T) {
 	tests := []struct {
 		name         string
+		file         string
 		path         string
-		payload      map[string]any
 		register     func(r *handler.Mux)
 		wantSpanName string
-		wantAttrKey  string
-		wantAttrVal  string
+		wantStrings  map[string]string
+		wantAbsent   []string
+		wantType     discord.InteractionType
 	}{
 		{
+			name: "SlashCommand",
+			file: "slash_command.json",
+			path: "/settings/notifications/enable",
+			register: func(r *handler.Mux) {
+				r.SlashCommand("/settings/notifications/enable", func(data discord.SlashCommandInteractionData, e *handler.CommandEvent) error {
+					if !oteltrace.SpanFromContext(e.Ctx).SpanContext().IsValid() {
+						t.Errorf("expected valid span in CommandEvent.Ctx")
+					}
+					return nil
+				})
+			},
+			wantSpanName: "SlashCommand: /settings/notifications/enable",
+			wantStrings: map[string]string{
+				"interaction.id":                      "100000000000000001",
+				"interaction.application.id":          "200000000000000002",
+				"interaction.user.id":                 "500000000000000005",
+				"interaction.channel.id":              "400000000000000004",
+				"interaction.guild.id":                "300000000000000003",
+				"interaction.command.id":              "600000000000000006",
+				"interaction.command.name":            "settings",
+				"interaction.command.guild.id":        "300000000000000003",
+				"interaction.command.subcommand":      "enable",
+				"interaction.command.subcommandgroup": "notifications",
+				"interaction.command.path":            "/settings/notifications/enable",
+			},
+			wantType: discord.InteractionTypeApplicationCommand,
+		},
+		{
 			name: "UserCommand",
+			file: "user_command.json",
 			path: "/User Info",
-			payload: basePayload(discord.InteractionTypeApplicationCommand, map[string]any{
-				"id":        "600000000000000006",
-				"name":      "User Info",
-				"type":      discord.ApplicationCommandTypeUser,
-				"target_id": "700000000000000007",
-			}),
 			register: func(r *handler.Mux) {
 				r.UserCommand("/User Info", func(data discord.UserCommandInteractionData, e *handler.CommandEvent) error {
 					return nil
 				})
 			},
 			wantSpanName: "UserCommand: /User Info",
-			wantAttrKey:  "interaction.command.user.id",
-			wantAttrVal:  "700000000000000007",
+			wantStrings: map[string]string{
+				"interaction.command.user.id": "700000000000000007",
+			},
+			wantType: discord.InteractionTypeApplicationCommand,
 		},
 		{
 			name: "MessageCommand",
+			file: "message_command.json",
 			path: "/Bookmark",
-			payload: basePayload(discord.InteractionTypeApplicationCommand, map[string]any{
-				"id":        "600000000000000006",
-				"name":      "Bookmark",
-				"type":      discord.ApplicationCommandTypeMessage,
-				"target_id": "800000000000000008",
-			}),
 			register: func(r *handler.Mux) {
 				r.MessageCommand("/Bookmark", func(data discord.MessageCommandInteractionData, e *handler.CommandEvent) error {
 					return nil
 				})
 			},
 			wantSpanName: "MessageCommand: /Bookmark",
-			wantAttrKey:  "interaction.command.message.id",
-			wantAttrVal:  "800000000000000008",
+			wantStrings: map[string]string{
+				"interaction.command.message.id": "800000000000000008",
+			},
+			wantType: discord.InteractionTypeApplicationCommand,
 		},
 		{
-			name: "EntryPointCommand",
+			name: "EntryPointCommandWithoutChannelOrGuild",
+			file: "entry_point_command.json",
 			path: "/launch",
-			payload: basePayload(discord.InteractionTypeApplicationCommand, map[string]any{
-				"id":   "600000000000000006",
-				"name": "launch",
-				"type": discord.ApplicationCommandTypePrimaryEntryPoint,
-			}),
 			register: func(r *handler.Mux) {
 				r.EntryPointCommand("/launch", func(data discord.EntryPointCommandInteractionData, e *handler.CommandEvent) error {
 					return nil
 				})
 			},
 			wantSpanName: "EntryPointCommand: /launch",
-			wantAttrKey:  "interaction.command.name",
-			wantAttrVal:  "launch",
+			wantStrings: map[string]string{
+				"interaction.command.name": "launch",
+			},
+			wantAbsent: []string{"interaction.channel.id", "interaction.guild.id"},
+			wantType:   discord.InteractionTypeApplicationCommand,
 		},
 		{
 			name: "Autocomplete",
+			file: "autocomplete.json",
 			path: "/search/catalog/items",
-			payload: basePayload(discord.InteractionTypeAutocomplete, map[string]any{
-				"id":       "600000000000000006",
-				"name":     "search",
-				"guild_id": "300000000000000003",
-				"options": []map[string]any{
-					{
-						"name": "catalog",
-						"type": discord.ApplicationCommandOptionTypeSubCommandGroup,
-						"options": []map[string]any{
-							{
-								"name": "items",
-								"type": discord.ApplicationCommandOptionTypeSubCommand,
-							},
-						},
-					},
-				},
-			}),
 			register: func(r *handler.Mux) {
 				r.Autocomplete("/search/catalog/items", func(e *handler.AutocompleteEvent) error {
 					return nil
 				})
 			},
 			wantSpanName: "Autocomplete: /search/catalog/items",
-			wantAttrKey:  "interaction.command.path",
-			wantAttrVal:  "/search/catalog/items",
+			wantStrings: map[string]string{
+				"interaction.command.path":            "/search/catalog/items",
+				"interaction.command.subcommand":      "items",
+				"interaction.command.subcommandgroup": "catalog",
+			},
+			wantType: discord.InteractionTypeAutocomplete,
+		},
+		{
+			name: "ButtonComponentRouteNormalization",
+			file: "button_component.json",
+			path: "/rps/play/rock/rps-747403406154399765-1729771800000",
+			register: func(r *handler.Mux) {
+				r.ButtonComponent("/rps/play/{choice}/{game_id}", func(data discord.ButtonInteractionData, e *handler.ComponentEvent) error {
+					return nil
+				})
+			},
+			wantSpanName: "Button: /rps/play/{choice}/{game_id}",
+			wantStrings: map[string]string{
+				"interaction.component.customid": "/rps/play/rock/rps-747403406154399765-1729771800000",
+			},
+			wantType: discord.InteractionTypeComponent,
+		},
+		{
+			name: "ButtonComponentPrefixCollision",
+			file: "button_collision_component.json",
+			path: "/game/game/999",
+			register: func(r *handler.Mux) {
+				r.ButtonComponent("/game/{mode}/{id}", func(data discord.ButtonInteractionData, e *handler.ComponentEvent) error {
+					return nil
+				})
+			},
+			wantSpanName: "Button: /game/{mode}/{id}",
+			wantStrings: map[string]string{
+				"interaction.component.customid": "/game/game/999",
+			},
+			wantType: discord.InteractionTypeComponent,
+		},
+		{
+			name: "SelectMenuComponentRouteNormalization",
+			file: "select_menu_component.json",
+			path: "/poll/vote/poll-42",
+			register: func(r *handler.Mux) {
+				r.SelectMenuComponent("/poll/vote/{poll_id}", func(data discord.SelectMenuInteractionData, e *handler.ComponentEvent) error {
+					return nil
+				})
+			},
+			wantSpanName: "SelectMenu: /poll/vote/{poll_id}",
+			wantStrings: map[string]string{
+				"interaction.component.customid": "/poll/vote/poll-42",
+			},
+			wantType: discord.InteractionTypeComponent,
+		},
+		{
+			name: "ModalSubmitRouteNormalization",
+			file: "modal_submit.json",
+			path: "/feedback/submit/ticket-888",
+			register: func(r *handler.Mux) {
+				r.Modal("/feedback/submit/{ticket_id}", func(e *handler.ModalEvent) error {
+					return nil
+				})
+			},
+			wantSpanName: "ModalSubmit: /feedback/submit/{ticket_id}",
+			wantStrings: map[string]string{
+				"interaction.modal.customid": "/feedback/submit/ticket-888",
+			},
+			wantType: discord.InteractionTypeModalSubmit,
 		},
 	}
 
@@ -286,7 +245,7 @@ func TestOtherCommandAndAutocompleteSpans(t *testing.T) {
 			r.Use(Middleware("test-bot", WithTracerProvider(tp)))
 			tc.register(r)
 
-			ie := newInteractionEvent(t, tc.payload)
+			ie := loadInteractionEvent(t, tc.file)
 			if err := r.Handle(tc.path, ie); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -295,12 +254,36 @@ func TestOtherCommandAndAutocompleteSpans(t *testing.T) {
 			if len(spans) != 1 {
 				t.Fatalf("expected 1 span, got %d", len(spans))
 			}
-			if spans[0].Name != tc.wantSpanName {
-				t.Errorf("span.Name = %q, want %q", spans[0].Name, tc.wantSpanName)
+
+			span := spans[0]
+			if span.Name != tc.wantSpanName {
+				t.Errorf("span.Name = %q, want %q", span.Name, tc.wantSpanName)
 			}
-			attrs := attrMap(spans[0].Attributes)
-			if got := attrs[tc.wantAttrKey].AsString(); got != tc.wantAttrVal {
-				t.Errorf("attr[%q] = %q, want %q", tc.wantAttrKey, got, tc.wantAttrVal)
+			if span.SpanKind != oteltrace.SpanKindServer {
+				t.Errorf("expected SpanKindServer, got %v", span.SpanKind)
+			}
+			if span.Status.Code != codes.Unset {
+				t.Errorf("expected status Unset, got %v", span.Status.Code)
+			}
+
+			attrs := attrMap(span.Attributes)
+			for k, want := range tc.wantStrings {
+				got, ok := attrs[k]
+				if !ok {
+					t.Errorf("missing expected attribute %q", k)
+					continue
+				}
+				if got.AsString() != want {
+					t.Errorf("attribute %q = %q, want %q", k, got.AsString(), want)
+				}
+			}
+			for _, k := range tc.wantAbsent {
+				if _, ok := attrs[k]; ok {
+					t.Errorf("did not expect attribute %q", k)
+				}
+			}
+			if got := attrs["interaction.type"].AsInt64(); got != int64(tc.wantType) {
+				t.Errorf("interaction.type = %d, want %d", got, tc.wantType)
 			}
 		})
 	}
@@ -324,12 +307,7 @@ func TestFilterSkipsSpanAndMetricsWhenFalse(t *testing.T) {
 		return nil
 	})
 
-	ie := newInteractionEvent(t, basePayload(discord.InteractionTypeApplicationCommand, map[string]any{
-		"id":   "600000000000000006",
-		"name": "ping",
-		"type": discord.ApplicationCommandTypeSlash,
-	}))
-
+	ie := loadInteractionEvent(t, "slash_command.json")
 	if err := wrapped(ie); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -359,12 +337,7 @@ func TestHandlerErrorRecordedOnSpan(t *testing.T) {
 		return expectedErr
 	})
 
-	ie := newInteractionEvent(t, basePayload(discord.InteractionTypeApplicationCommand, map[string]any{
-		"id":   "600000000000000006",
-		"name": "ping",
-		"type": discord.ApplicationCommandTypeSlash,
-	}))
-
+	ie := loadInteractionEvent(t, "slash_command.json")
 	err := wrapped(ie)
 	if !errors.Is(err, expectedErr) {
 		t.Fatalf("expected error %v, got %v", expectedErr, err)
@@ -387,90 +360,6 @@ func TestHandlerErrorRecordedOnSpan(t *testing.T) {
 	}
 }
 
-func TestComponentAndModalRouteNormalization(t *testing.T) {
-	exporter, tp := setupTestTracer(t)
-
-	r := handler.New()
-	r.Use(Middleware("test-bot", WithTracerProvider(tp)))
-
-	r.ButtonComponent("/rps/play/{choice}/{game_id}", func(data discord.ButtonInteractionData, e *handler.ComponentEvent) error {
-		return nil
-	})
-	r.ButtonComponent("/game/{mode}/{id}", func(data discord.ButtonInteractionData, e *handler.ComponentEvent) error {
-		return nil
-	})
-	r.SelectMenuComponent("/poll/vote/{poll_id}", func(data discord.SelectMenuInteractionData, e *handler.ComponentEvent) error {
-		return nil
-	})
-	r.Modal("/feedback/submit/{ticket_id}", func(e *handler.ModalEvent) error {
-		return nil
-	})
-
-	rawBtnID := "/rps/play/rock/rps-747403406154399765-1729771800000"
-	btnEvent := newInteractionEvent(t, basePayload(discord.InteractionTypeComponent, map[string]any{
-		"component_type": discord.ComponentTypeButton,
-		"custom_id":      rawBtnID,
-	}))
-	if err := r.Handle(rawBtnID, btnEvent); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	collisionBtnID := "/game/game/999"
-	collisionEvent := newInteractionEvent(t, basePayload(discord.InteractionTypeComponent, map[string]any{
-		"component_type": discord.ComponentTypeButton,
-		"custom_id":      collisionBtnID,
-	}))
-	if err := r.Handle(collisionBtnID, collisionEvent); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	rawMenuID := "/poll/vote/poll-42"
-	menuEvent := newInteractionEvent(t, basePayload(discord.InteractionTypeComponent, map[string]any{
-		"component_type": discord.ComponentTypeStringSelectMenu,
-		"custom_id":      rawMenuID,
-		"values":         []string{"opt1"},
-	}))
-	if err := r.Handle(rawMenuID, menuEvent); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	rawModalID := "/feedback/submit/ticket-888"
-	modalEvent := newInteractionEvent(t, basePayload(discord.InteractionTypeModalSubmit, map[string]any{
-		"custom_id":  rawModalID,
-		"components": []any{},
-	}))
-	if err := r.Handle(rawModalID, modalEvent); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	spans := exporter.GetSpans()
-	if len(spans) != 4 {
-		t.Fatalf("expected 4 spans, got %d", len(spans))
-	}
-
-	if spans[0].Name != "Button: /rps/play/{choice}/{game_id}" {
-		t.Errorf("span[0].Name = %q, want %q", spans[0].Name, "Button: /rps/play/{choice}/{game_id}")
-	}
-	if got := attrMap(spans[0].Attributes)["interaction.component.customid"].AsString(); got != rawBtnID {
-		t.Errorf("expected raw custom_id attribute %q, got %q", rawBtnID, got)
-	}
-
-	if spans[1].Name != "Button: /game/{mode}/{id}" {
-		t.Errorf("span[1].Name = %q, want %q", spans[1].Name, "Button: /game/{mode}/{id}")
-	}
-
-	if spans[2].Name != "SelectMenu: /poll/vote/{poll_id}" {
-		t.Errorf("span[2].Name = %q, want %q", spans[2].Name, "SelectMenu: /poll/vote/{poll_id}")
-	}
-
-	if spans[3].Name != "ModalSubmit: /feedback/submit/{ticket_id}" {
-		t.Errorf("span[3].Name = %q, want %q", spans[3].Name, "ModalSubmit: /feedback/submit/{ticket_id}")
-	}
-	if got := attrMap(spans[3].Attributes)["interaction.modal.customid"].AsString(); got != rawModalID {
-		t.Errorf("expected raw modal custom_id attribute %q, got %q", rawModalID, got)
-	}
-}
-
 func TestWithSpanNameFormatter(t *testing.T) {
 	exporter, tp := setupTestTracer(t)
 
@@ -478,19 +367,16 @@ func TestWithSpanNameFormatter(t *testing.T) {
 	r.Use(Middleware("test-bot",
 		WithTracerProvider(tp),
 		WithSpanNameFormatter(func(e *handler.InteractionEvent) string {
-			return "custom:" + e.Vars["action"]
+			return "custom:" + e.Vars["choice"]
 		}),
 	))
 
-	r.ButtonComponent("/item/{action}", func(data discord.ButtonInteractionData, e *handler.ComponentEvent) error {
+	r.ButtonComponent("/rps/play/{choice}/{game_id}", func(data discord.ButtonInteractionData, e *handler.ComponentEvent) error {
 		return nil
 	})
 
-	ie := newInteractionEvent(t, basePayload(discord.InteractionTypeComponent, map[string]any{
-		"component_type": discord.ComponentTypeButton,
-		"custom_id":      "/item/archive",
-	}))
-	if err := r.Handle("/item/archive", ie); err != nil {
+	ie := loadInteractionEvent(t, "button_component.json")
+	if err := r.Handle("/rps/play/rock/rps-747403406154399765-1729771800000", ie); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -498,8 +384,8 @@ func TestWithSpanNameFormatter(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("expected 1 span, got %d", len(spans))
 	}
-	if spans[0].Name != "custom:archive" {
-		t.Errorf("span.Name = %q, want %q", spans[0].Name, "custom:archive")
+	if spans[0].Name != "custom:rock" {
+		t.Errorf("span.Name = %q, want %q", spans[0].Name, "custom:rock")
 	}
 }
 
@@ -529,27 +415,20 @@ func TestMetricsRecordingAndCardinality(t *testing.T) {
 		return nil
 	})
 
-	r.SlashCommand("/fail", func(data discord.SlashCommandInteractionData, e *handler.CommandEvent) error {
+	r.SlashCommand("/settings/notifications/enable", func(data discord.SlashCommandInteractionData, e *handler.CommandEvent) error {
 		return errors.New("boom")
 	})
 
-	btnEvent := newInteractionEvent(t, basePayload(discord.InteractionTypeComponent, map[string]any{
-		"component_type": discord.ComponentTypeButton,
-		"custom_id":      "/rps/play/rock/rps-999",
-	}))
-	if err := r.Handle("/rps/play/rock/rps-999", btnEvent); err != nil {
+	btnEvent := loadInteractionEvent(t, "button_component.json")
+	if err := r.Handle("/rps/play/rock/rps-747403406154399765-1729771800000", btnEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if activeDuringHandler != 1 {
 		t.Errorf("expected active interactions to be 1 during handler execution, got %d", activeDuringHandler)
 	}
 
-	failEvent := newInteractionEvent(t, basePayload(discord.InteractionTypeApplicationCommand, map[string]any{
-		"id":   "600000000000000006",
-		"name": "fail",
-		"type": discord.ApplicationCommandTypeSlash,
-	}))
-	_ = r.Handle("/fail", failEvent)
+	failEvent := loadInteractionEvent(t, "slash_command.json")
+	_ = r.Handle("/settings/notifications/enable", failEvent)
 
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(context.Background(), &rm); err != nil {
@@ -597,9 +476,9 @@ func TestMetricsRecordingAndCardinality(t *testing.T) {
 			if status != "ok" {
 				t.Errorf("expected status ok for button, got %q", status)
 			}
-		case "SlashCommand: /fail":
+		case "SlashCommand: /settings/notifications/enable":
 			if status != "error" {
-				t.Errorf("expected status error for /fail, got %q", status)
+				t.Errorf("expected status error for slash command, got %q", status)
 			}
 		default:
 			t.Errorf("unexpected metric interaction.name: %q", name)
@@ -622,7 +501,7 @@ func TestMetricsRecordingAndCardinality(t *testing.T) {
 	}
 }
 
-func TestNilSafety(t *testing.T) {
+func TestConfigNilFallbackAndUnknownInteraction(t *testing.T) {
 	exporter, tp := setupTestTracer(t)
 
 	cfg := defaultConfig()
@@ -636,60 +515,13 @@ func TestNilSafety(t *testing.T) {
 		return nil
 	})
 
-	payload := map[string]any{
-		"id":             "100000000000000001",
-		"application_id": "200000000000000002",
-		"type":           discord.InteractionTypeApplicationCommand,
-		"token":          "test-token",
-		"version":        1,
-		"user": map[string]any{
-			"id":            "500000000000000005",
-			"username":      "testuser",
-			"discriminator": "0",
-		},
-		"data": map[string]any{
-			"id":   "600000000000000006",
-			"name": "launch",
-			"type": discord.ApplicationCommandTypePrimaryEntryPoint,
-		},
-	}
-	ie := newInteractionEvent(t, payload)
-
-	if err := wrapped(ie); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	spans := exporter.GetSpans()
-	if len(spans) != 1 {
-		t.Fatalf("expected 1 span, got %d", len(spans))
-	}
-	attrs := attrMap(spans[0].Attributes)
-	if _, ok := attrs["interaction.channel.id"]; ok {
-		t.Errorf("did not expect interaction.channel.id when channel is absent")
-	}
-	if _, ok := attrs["interaction.guild.id"]; ok {
-		t.Errorf("did not expect interaction.guild.id when guild_id is absent")
-	}
-
-	// PingInteraction hits the default "Unknown" branch
-	pingEvent := newInteractionEvent(t, map[string]any{
-		"id":             "100000000000000001",
-		"application_id": "200000000000000002",
-		"type":           discord.InteractionTypePing,
-		"token":          "test-token",
-		"version":        1,
-		"user": map[string]any{
-			"id":            "500000000000000005",
-			"username":      "testuser",
-			"discriminator": "0",
-		},
-	})
+	pingEvent := loadInteractionEvent(t, "ping.json")
 	if err := wrapped(pingEvent); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	spans = exporter.GetSpans()
-	if len(spans) != 2 || spans[1].Name != "Unknown" {
-		t.Errorf("expected second span name %q, got %+v", "Unknown", spans)
+	spans := exporter.GetSpans()
+	if len(spans) != 1 || spans[0].Name != "Unknown" {
+		t.Errorf("expected span name %q, got %+v", "Unknown", spans)
 	}
 }
 

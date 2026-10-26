@@ -1,0 +1,36 @@
+{
+  "id": "100000000000000001",
+  "application_id": "200000000000000002",
+  "type": 4,
+  "token": "test-token",
+  "version": 1,
+  "guild_id": "300000000000000003",
+  "channel": {
+    "id": "400000000000000004",
+    "type": 0,
+    "name": "general",
+    "permissions": "0"
+  },
+  "user": {
+    "id": "500000000000000005",
+    "username": "testuser",
+    "discriminator": "0"
+  },
+  "data": {
+    "id": "600000000000000006",
+    "name": "search",
+    "guild_id": "300000000000000003",
+    "options": [
+      {
+        "name": "catalog",
+        "type": 2,
+        "options": [
+          {
+            "name": "items",
+            "type": 1
+          }
+        ]
+      }
+    ]
+  }
+}
