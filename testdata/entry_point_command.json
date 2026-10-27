@@ -1,0 +1,17 @@
+{
+  "id": "100000000000000001",
+  "application_id": "200000000000000002",
+  "type": 2,
+  "token": "test-token",
+  "version": 1,
+  "user": {
+    "id": "500000000000000005",
+    "username": "testuser",
+    "discriminator": "0"
+  },
+  "data": {
+    "id": "600000000000000006",
+    "name": "launch",
+    "type": 4
+  }
+}
